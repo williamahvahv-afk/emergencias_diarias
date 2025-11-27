@@ -1,0 +1,427 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>COE MIDIS – Tablero y Mapa (Excel)</title>
+
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+
+<!-- html2pdf (incluye html2canvas + jsPDF) -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+
+<style>
+  :root { --card-border:#e6e6e6; }
+  body { font-family: Arial, Helvetica, sans-serif; margin: 0; background:#fff; }
+
+  header {
+    padding:12px 18px;
+    background:#f2f6ff;
+    border-bottom:1px solid #e0e7ff;
+    display:flex;
+    gap:16px;
+    align-items:flex-start;
+    flex-wrap:wrap;
+  }
+  #logo {
+    width:8.53cm;
+    height:2.32cm;
+    object-fit:contain;
+    display:block;
+  }
+  .head-right { display:flex; flex-direction:column; gap:8px; flex:1; }
+  h1 { font-size:18px; margin:0; }
+
+  .kpis {
+    display:flex;
+    gap:12px;
+    margin:8px 0 0 0;
+    flex-wrap:wrap;
+  }
+  .kpi {
+    background:#f7f7f7;
+    border:1px solid var(--card-border);
+    border-radius:10px;
+    padding:10px 14px;
+    min-width:200px;
+  }
+  .kpi .label{font-size:12px;color:#444}
+  .kpi .value{font-size:22px;font-weight:700}
+
+  .tools{margin-left:auto;display:flex;gap:8px;align-items:center}
+  .btn{
+    appearance:none;
+    border:1px solid #0b5ed7;
+    background:#0d6efd;
+    color:#fff;
+    padding:8px 12px;
+    border-radius:8px;
+    font-weight:600;
+    cursor:pointer;
+  }
+  .btn:disabled{opacity:.6;cursor:not-allowed}
+
+  .content{display:flex;gap:12px;padding:12px 18px}
+  #map{
+    height:520px;
+    flex:1.1;
+    border:1px solid var(--card-border);
+    border-radius:10px;
+    position:relative; /* para el placeholder */
+  }
+  .right{flex:1;display:flex;flex-direction:column;gap:12px}
+  .card{
+    border:1px solid var(--card-border);
+    border-radius:10px;
+    padding:10px;
+    background:#fff;
+  }
+
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th,td{border:1px solid #eee;padding:6px 8px;vertical-align:top}
+  th{background:#fafafa;text-align:left}
+
+  tr.row-activa{background:#d32f2f;color:#fff}
+  tr.row-proceso{background:#FFE699;color:#000}
+
+  tbody tr:hover{outline:2px solid #000;outline-offset:-2px}
+
+  #errorBox{
+    display:none;
+    margin:10px 18px;
+    padding:10px;
+    border:1px solid #f00;
+    color:#900;
+    background:#ffecec;
+    border-radius:8px;
+    font-size:13px;
+  }
+  footer{
+    padding:10px 18px;
+    border-top:1px solid #eee;
+    color:#555;
+    font-size:12px;
+  }
+
+  /* Capa que se verá en el PDF donde va el mapa */
+  .map-placeholder {
+    position:absolute;
+    inset:0;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    background:rgba(255,255,255,0.7);
+    font-size:14px;
+    font-weight:bold;
+    color:#444;
+    text-align:center;
+    padding:10px;
+    pointer-events:none; /* no bloquea el mapa en la web */
+  }
+
+  @media (max-width:1024px){
+    .content{flex-direction:column}
+    #map{height:420px}
+  }
+</style>
+</head>
+<body>
+<div id="export-root">
+  <header id="top">
+    <img id="logo" src="coe_midis.jpg" alt="COE MIDIS"/>
+    <div class="head-right">
+      <div style="display:flex;gap:12px;align-items:flex-start;flex-wrap:wrap;">
+        <h1 id="titulo" style="margin-right:auto;">COE MIDIS – Resumen diario</h1>
+        <div class="tools">
+          <button id="btn-pdf" class="btn">Exportar PDF (A4)</button>
+        </div>
+      </div>
+      <div class="kpis">
+        <div class="kpi">
+          <div class="label">Total eventos</div>
+          <div class="value" id="kpi-total">0</div>
+        </div>
+        <div class="kpi">
+          <div class="label">Emergencias activas</div>
+          <div class="value" id="kpi-activas">0</div>
+        </div>
+        <div class="kpi">
+          <div class="label">En proceso</div>
+          <div class="value" id="kpi-proceso">0</div>
+        </div>
+        <div class="kpi">
+          <div class="label">Impacto clave MIDIS</div>
+          <div class="value" id="kpi-impacto" style="font-size:14px;">—</div>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <div id="errorBox"></div>
+
+  <div class="content" id="main">
+    <div id="map">
+      <div class="map-placeholder">
+        Mapa interactivo (visible en la versión web).<br/>
+        Por restricciones del navegador, la imagen del mapa no se incluye en el PDF.
+      </div>
+    </div>
+    <div class="right">
+      <div class="card">
+        <strong>Detalle de emergencias</strong>
+        <table id="tabla">
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Ubicación</th>
+              <th>Fecha / Tipo</th>
+              <th>Afectación general</th>
+              <th>Sector MIDIS</th>
+              <th>Acciones</th>
+              <th>Estado</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div class="card" style="font-size:12px;">
+        <div><strong>Contacto COE MIDIS:</strong> coemidis@midis.gob.pe | 994 651 862</div>
+        <div><strong>Fuente:</strong> COE MIDIS – EMSS</div>
+      </div>
+    </div>
+  </div>
+
+  <footer>
+    © COE MIDIS – Tablero interno. Reemplace <code>emergencias.xlsx</code> y recargue.
+  </footer>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+/* ========= Utilitarios fechas/hora Excel ========= */
+function excelSerialToDateString(n){
+  const d=new Date(Date.UTC(1899,11,30)+Math.floor(Number(n))*86400000);
+  return String(d.getUTCDate()).padStart(2,'0')+'/'+
+         String(d.getUTCMonth()+1).padStart(2,'0')+'/'+
+         d.getUTCFullYear();
+}
+function excelFractionToTimeString(n){
+  const m=Math.round((Number(n)-Math.floor(Number(n)))*1440);
+  return String(Math.floor(m/60)).padStart(2,'0')+':' +
+         String(m%60).padStart(2,'0');
+}
+function fmtFecha(v){return typeof v==='number'?excelSerialToDateString(v):String(v||'');}
+function fmtHora(v){return typeof v==='number'?excelFractionToTimeString(v):String(v||'');}
+
+/* ========= Mapa ========= */
+const map=L.map('map').setView([-12.2,-75.2],5);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{
+  maxZoom:18,
+  attribution:'&copy; OpenStreetMap',
+  crossOrigin:true
+}).addTo(map);
+
+(async ()=>{
+  try{
+    let url='departamentos.GOEJSON';
+    let r=await fetch(url);
+    if(!r.ok){url='departamentos.geojson';r=await fetch(url);}
+    const geo=await r.json();
+    const deptos=L.geoJSON(geo,{
+      style:()=>({color:'#0066FF',weight:1.5,opacity:1,fillOpacity:0})
+    }).addTo(map);
+    try{ map.fitBounds(deptos.getBounds(),{padding:[10,10]}); }catch(e){}
+  }catch(e){
+    showErr('No se pudo cargar departamentos.(geo)json: '+e.message);
+  }
+})();
+
+const colorActiva='#d32f2f', colorProceso='#FFE699',
+      baseWeight=1.5, hoverWeight=3,
+      baseRadius=8, hoverRadius=11;
+const markersById={};
+
+function showErr(msg){
+  const box=document.getElementById('errorBox');
+  box.style.display='block';
+  box.textContent=msg;
+}
+
+function crearMarker(e){
+  const stroke=(e.estado==='Activa')?colorActiva:colorProceso;
+  const m=L.circleMarker([e.lat,e.lon],{
+    radius:baseRadius,
+    color:stroke,
+    weight:baseWeight,
+    fillColor:stroke,
+    fillOpacity:0.95
+  }).addTo(map);
+  m.bindPopup(
+    `<b>${e.id}. ${e.distrito}, ${e.provincia} (${e.departamento})</b><br/>`+
+    `${e.fecha} – ${e.tipo}<br/>`+
+    `<i>Afectación:</i> ${e.afectacion_general}<br/>`+
+    `<i>Sector MIDIS:</i> ${e.afectacion_midis}<br/>`+
+    `<i>Estado:</i> ${e.estado}<br/>`+
+    `<i>Acciones:</i> ${e.acciones||'—'}`
+  );
+  m._default={color:stroke,weight:baseWeight,radius:baseRadius};
+  markersById[e.id]=m;
+}
+function highlightMarker(id){
+  const m=markersById[id]; if(!m) return;
+  m.setStyle({color:'#000',weight:hoverWeight});
+  m.setRadius(hoverRadius);
+  if(m.bringToFront) m.bringToFront();
+}
+function resetMarker(id){
+  const m=markersById[id]; if(!m||!m._default) return;
+  m.setStyle({color:m._default.color,weight:baseWeight});
+  m.setRadius(baseRadius);
+}
+function pintarMapa(events){ events.forEach(e=>crearMarker(e)); }
+
+function llenarTabla(events){
+  const tb=document.querySelector("#tabla tbody");
+  tb.innerHTML="";
+  events.forEach(e=>{
+    const tr=document.createElement("tr");
+    tr.dataset.id=e.id;
+    tr.className=(e.estado==="Activa")?"row-activa":"row-proceso";
+    tr.innerHTML=
+      `<td>${e.id}</td>`+
+      `<td>${e.distrito}, ${e.provincia} (${e.departamento})</td>`+
+      `<td>${e.fecha}<br/>${e.tipo}</td>`+
+      `<td>${e.afectacion_general}</td>`+
+      `<td>${e.afectacion_midis}</td>`+
+      `<td>${e.acciones||'—'}</td>`+
+      `<td>${e.estado}</td>`;
+    tr.addEventListener('mouseenter',()=>highlightMarker(e.id));
+    tr.addEventListener('mouseleave',()=>resetMarker(e.id));
+    tb.appendChild(tr);
+  });
+}
+
+function actualizarKPI(events,meta){
+  document.getElementById("kpi-total").textContent=events.length;
+  document.getElementById("kpi-activas").textContent=
+    events.filter(e=>e.estado==="Activa").length;
+  document.getElementById("kpi-proceso").textContent=
+    events.filter(e=>e.estado==="En proceso").length;
+  document.getElementById("kpi-impacto").textContent=
+    meta.impacto_clave||"—";
+  document.getElementById("titulo").textContent=
+    `COE MIDIS – Resumen diario (${meta.fecha} · Corte ${meta.hora_corte})`;
+}
+
+/* ========= Cargar datos desde Excel (y fallback a JSON) ========= */
+async function cargarDesdeExcel(){
+  const resp=await fetch('emergencias.xlsx?_='+Date.now());
+  if(!resp.ok) throw new Error('No se encontró emergencias.xlsx');
+  const wb=XLSX.read(await resp.arrayBuffer(),{type:'array'});
+
+  const metaSheet=wb.Sheets['meta'];
+  if(!metaSheet) throw new Error('Hoja "meta" no existe');
+  const metaRows=XLSX.utils.sheet_to_json(metaSheet,{header:1});
+  const hdr=(metaRows[0]||[]).map(String);
+  const row=metaRows[1]||[];
+  const idx=n=>hdr.indexOf(n);
+  const meta={
+    fecha:fmtFecha(row[idx('fecha')]),
+    hora_corte:fmtHora(row[idx('hora_corte')]),
+    impacto_clave:String(row[idx('impacto_clave')]||'')
+  };
+
+  const evSheet=wb.Sheets['events'];
+  if(!evSheet) throw new Error('Hoja "events" no existe');
+  const events=XLSX.utils.sheet_to_json(evSheet,{defval:''})
+    .map(e=>({
+      id:Number(e.id),
+      departamento:e.departamento,
+      provincia:e.provincia,
+      distrito:e.distrito,
+      fecha:fmtFecha(e.fecha),
+      tipo:e.tipo,
+      afectacion_general:e.afectacion_general,
+      afectacion_midis:e.afectacion_midis,
+      estado:(e.estado||'').trim(),
+      acciones:e.acciones,
+      lat:Number(e.lat),
+      lon:Number(e.lon)
+    }))
+    .filter(e=>!Number.isNaN(e.lat)&&!Number.isNaN(e.lon));
+
+  return {meta,events};
+}
+
+async function cargarDatos(){
+  try{
+    const {meta,events}=await cargarDesdeExcel();
+    actualizarKPI(events,meta);
+    llenarTabla(events);
+    pintarMapa(events);
+  }catch(ex){
+    showErr('Fallo Excel: '+ex.message+' → Intentando events.json');
+    try{
+      const r=await fetch("events.json?_="+Date.now());
+      const data=await r.json();
+      const events=data.events||[];
+      const meta=data.meta||{fecha:"—",hora_corte:"—",impacto_clave:"—"};
+      actualizarKPI(events,meta);
+      llenarTabla(events);
+      pintarMapa(events);
+    }catch(e2){
+      showErr("No se pudo cargar ni 'emergencias.xlsx' ni 'events.json'.");
+    }
+  }
+}
+cargarDatos();
+
+/* ========= Esperar que carguen los tiles del mapa ========= */
+function waitForTiles(lmap){
+  return new Promise(resolve=>{
+    lmap.whenReady(()=>{
+      const check=()=>{
+        if(!(lmap._tilesToLoad>0)) resolve();
+      };
+      setTimeout(check,150);
+    });
+  });
+}
+
+/* ========= Exportar a PDF A4 con márgenes exactos ========= */
+document.getElementById('btn-pdf').addEventListener('click', async ()=>{
+  const btn=document.getElementById('btn-pdf');
+  btn.disabled=true;
+  btn.textContent='Generando…';
+
+  map.invalidateSize(false);
+  await waitForTiles(map);
+
+  const element=document.getElementById('export-root');
+
+  const opt={
+    margin: [25,30,25,30], // mm: top, left, bottom, right
+    filename: `COE_MIDIS_resumen_${new Date().toISOString().slice(0,10)}.pdf`,
+    image: { type:'jpeg', quality:0.98 },
+    html2canvas: {
+      scale: 2,
+      useCORS: true,
+      scrollX: 0,
+      scrollY: 0
+    },
+    jsPDF: {
+      unit: 'mm',
+      format: 'a4',
+      orientation: 'portrait'
+    }
+  };
+
+  html2pdf().set(opt).from(element).save().finally(()=>{
+    btn.disabled=false;
+    btn.textContent='Exportar PDF (A4)';
+  });
+});
+</script>
+</body>
+</html>
